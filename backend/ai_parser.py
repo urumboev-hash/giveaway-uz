@@ -16,8 +16,20 @@ import requests
 
 log = logging.getLogger("ai_parser")
 
-# gemini-2.5-flash больше не выдаётся новым ключам — Google рекомендует gemini-3.8-flash.
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+# У каждой модели Gemini свой дневной лимит — идём по цепочке: кончился лимит у одной, берём следующую.
+# gemini-2.5-* новым ключам недоступны. Свой список — через GEMINI_MODELS="a,b,c".
+DEFAULT_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+]
+MODELS = [m.strip() for m in os.getenv("GEMINI_MODELS", "").split(",") if m.strip()] or (
+    [os.getenv("GEMINI_MODEL")] if os.getenv("GEMINI_MODEL") else DEFAULT_MODELS
+)
+MODEL = MODELS[0]
 GROQ_URL = "https://api.groq.com/openai/v1"
 # первая доступная из списка (можно задать свою через GROQ_MODEL)
 GROQ_PREFERRED = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]
@@ -85,8 +97,9 @@ class AIParser:
             from google import genai  # импорт здесь — без ключа Gemini пакет не нужен
 
             self.gemini = genai.Client(api_key=gemini_key)
-        self.gemini_off = self.gemini is None  # True — до конца запуска больше не пробуем Gemini
-        self.min_interval = min_interval  # бесплатный Gemini ~10 запросов/мин
+        # модели Gemini, у которых ещё есть лимит в этом запуске
+        self.gemini_models = list(MODELS) if self.gemini else []
+        self.min_interval = min_interval  # бесплатный Gemini ~10 запросов/мин на модель
         self._last_gemini = 0.0
 
         self.groq_key = groq_key
@@ -96,9 +109,13 @@ class AIParser:
 
         log.info(
             "ИИ: Gemini %s, Groq %s",
-            "выкл" if self.gemini_off else MODEL,
+            " → ".join(self.gemini_models) or "выкл",
             self.groq_model or "выкл",
         )
+
+    @property
+    def gemini_off(self) -> bool:
+        return not self.gemini_models
 
     # ---------- общий вход ----------
     def parse(self, text: str, account_name: str | None = None) -> dict | None:
@@ -131,39 +148,40 @@ class AIParser:
             response_schema=RESPONSE_SCHEMA,
             temperature=0.1,
         )
-        has_backup = bool(self.groq_model)
-        for attempt in range(1 if has_backup else 3):
-            self._wait("_last_gemini", self.min_interval)
-            try:
-                resp = self.gemini.models.generate_content(model=MODEL, contents=prompt, config=config)
-                return self._normalize(json.loads(resp.text or "{}"))
-            except json.JSONDecodeError as e:
-                log.warning("Gemini вернул не-JSON: %s", e)
-                return None
-            except Exception as e:
-                msg = str(e)
-                quota = "429" in msg or "RESOURCE_EXHAUSTED" in msg
-                busy = "503" in msg or "UNAVAILABLE" in msg
-                if quota and has_backup:
-                    log.warning("Gemini: лимит исчерпан — до конца запуска работаем через Groq")
-                    self.gemini_off = True
+        # 2 круга по цепочке моделей; перегруженную (503) модель пропускаем только для этого поста,
+        # а модель с исчерпанным лимитом (429) или недоступную (404) убираем до конца запуска.
+        for round_ in range(2):
+            for model in list(self.gemini_models):
+                self._wait("_last_gemini", self.min_interval)
+                try:
+                    resp = self.gemini.models.generate_content(model=model, contents=prompt, config=config)
+                    return self._normalize(json.loads(resp.text or "{}"))
+                except json.JSONDecodeError as e:
+                    log.warning("Gemini %s вернул не-JSON: %s", model, e)
                     return None
-                if busy and has_backup:
-                    log.info("Gemini перегружен — этот пост разберёт Groq")
+                except Exception as e:
+                    msg = str(e)
+                    if "API_KEY_INVALID" in msg or "PERMISSION_DENIED" in msg:
+                        self.gemini_models.clear()
+                        if self.groq_model:
+                            log.error("Ключ Gemini не работает — дальше только Groq")
+                            return None
+                        raise RuntimeError(f"Ключ Gemini не работает: {msg[:200]}") from e
+                    if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "NOT_FOUND" in msg or "404" in msg:
+                        why = "лимит исчерпан" if ("429" in msg or "RESOURCE" in msg) else "модель недоступна"
+                        self.gemini_models.remove(model)
+                        nxt = self.gemini_models[0] if self.gemini_models else (self.groq_model and "Groq") or "нет"
+                        log.warning("Gemini %s: %s — переключаюсь на %s", model, why, nxt)
+                        continue
+                    if "503" in msg or "UNAVAILABLE" in msg or "500" in msg or "INTERNAL" in msg:
+                        log.info("Gemini %s перегружен — пробую следующую модель", model)
+                        continue
+                    log.error("Ошибка Gemini %s: %s", model, msg[:300])
                     return None
-                if quota or busy:
-                    delay = 20 * (attempt + 1)
-                    log.warning("Gemini перегружен/лимит, жду %d с (%s)", delay, msg[:120])
-                    time.sleep(delay)
-                    continue
-                log.error("Ошибка Gemini: %s", msg[:300])
-                if "NOT_FOUND" in msg or "API_KEY_INVALID" in msg or "PERMISSION_DENIED" in msg:
-                    if has_backup:
-                        log.warning("Gemini недоступен (модель %s или ключ) — дальше только Groq", MODEL)
-                        self.gemini_off = True
-                        return None
-                    raise RuntimeError(f"Gemini недоступен (модель {MODEL} или ключ): {msg[:200]}") from e
+            if not self.gemini_models or self.groq_model:
                 return None
+            log.warning("Все модели Gemini перегружены, жду 30 с")
+            time.sleep(30)
         return None
 
     # ---------- Groq ----------
