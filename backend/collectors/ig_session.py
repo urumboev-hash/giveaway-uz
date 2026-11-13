@@ -10,6 +10,19 @@ import instaloader
 log = logging.getLogger("collectors.ig")
 
 _SESSION_DIR = Path(__file__).resolve().parent.parent / ".ig_session"
+MAX_WAIT_SECONDS = 90
+
+
+class _NoLongWaitRateController(instaloader.RateController):
+    """Instaloader при лимите Instagram «засыпает» на 30+ минут — вместо этого бросаем 429,
+    сборщики ловят его и переходят дальше, запуск не зависает."""
+
+    def sleep(self, secs: float) -> None:
+        if secs > MAX_WAIT_SECONDS:
+            raise instaloader.exceptions.TooManyRequestsException(
+                f"Instagram просит подождать {int(secs)} с — пропускаем"
+            )
+        super().sleep(secs)
 _loader: instaloader.Instaloader | None = None
 _logged_in = False
 
@@ -31,6 +44,7 @@ def get_loader() -> tuple[instaloader.Instaloader, bool]:
         quiet=True,
         max_connection_attempts=1,
         request_timeout=30,
+        rate_controller=lambda ctx: _NoLongWaitRateController(ctx),
     )
 
     user = os.getenv("IG_USERNAME", "").strip()

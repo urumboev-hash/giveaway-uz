@@ -91,9 +91,13 @@ def enrich(posts: list[RawPost], limit: int = 10) -> None:
         from .base import shortcode_from_url
         from .ig_session import get_loader
 
-        loader, _ = get_loader()
+        loader, logged_in = get_loader()
     except Exception as e:
         log.warning("Обогащение пропущено: %s", e)
+        return
+    if not logged_in:
+        # анонимно Instagram почти всегда отказывает — не тратим время, ИИ разберёт сниппет
+        log.info("Обогащение пропущено: нет входа в Instagram")
         return
 
     for post in posts[:limit]:
