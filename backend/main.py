@@ -33,6 +33,17 @@ log = logging.getLogger("main")
 
 MAX_AI_CALLS_PER_RUN = int(os.getenv("MAX_AI_CALLS_PER_RUN", "60"))
 
+# слова «халявы» — посты с ними проверяем первыми, чтобы лимит ИИ тратился на самые вероятные
+FREE_WORDS = (
+    "розыгрыш", "разыгр", "конкурс", "дарим", "подар", "приз", "бесплатн", "халяв", "гив", "giveaway",
+    "free", "gift", "konkurs", "sovg", "yutib", "yutuq", "bepul", "tekin", "o'yin", "совға", "ютиб",
+)
+
+
+def free_score(p: RawPost) -> int:
+    t = (p.text or "").lower()
+    return sum(w in t for w in FREE_WORDS)
+
 
 def get_supabase() -> Client:
     url = os.getenv("SUPABASE_URL")
@@ -101,6 +112,10 @@ def main() -> int:
         posts = [p for p in posts if p.post_url not in seen]
         log.info("Новых (ещё не в базе): %d", len(posts))
 
+    posts.sort(key=free_score, reverse=True)
+    if len(posts) > MAX_AI_CALLS_PER_RUN:
+        log.info("Проверим %d самых вероятных, остальные %d — в следующий запуск",
+                 MAX_AI_CALLS_PER_RUN, len(posts) - MAX_AI_CALLS_PER_RUN)
     posts = posts[:MAX_AI_CALLS_PER_RUN]
 
     # у постов из поиска только короткий сниппет — пробуем подтянуть полный текст
