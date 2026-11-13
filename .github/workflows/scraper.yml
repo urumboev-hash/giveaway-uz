@@ -1,0 +1,47 @@
+name: Giveaway scraper
+
+on:
+  schedule:
+    - cron: "0 */3 * * *"   # каждые 3 часа (UTC)
+  workflow_dispatch: {}      # ручной запуск из вкладки Actions
+
+concurrency:
+  group: scraper
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      # сохраняем сессию Instagram между запусками — меньше логинов, меньше блокировок
+      - name: Restore Instagram session
+        uses: actions/cache@v4
+        with:
+          path: backend/.ig_session
+          key: ig-session-${{ github.run_id }}
+          restore-keys: ig-session-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          IG_USERNAME: ${{ secrets.IG_USERNAME }}
+          IG_PASSWORD: ${{ secrets.IG_PASSWORD }}
+          PYTHONUNBUFFERED: "1"
+        run: python main.py
