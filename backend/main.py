@@ -18,6 +18,10 @@ from collectors import accounts_collector, google_collector, hashtag_collector
 from collectors.base import RawPost
 
 load_dotenv()
+# убираем BOM/пробелы из ключей (бывает при копировании или передаче через PowerShell)
+for _k in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY", "GEMINI_API_KEY", "IG_USERNAME", "IG_PASSWORD"):
+    if _k in os.environ:
+        os.environ[_k] = os.environ[_k].lstrip("﻿").strip()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
