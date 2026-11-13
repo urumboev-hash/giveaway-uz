@@ -19,7 +19,7 @@ from collectors.base import RawPost
 
 load_dotenv()
 # убираем BOM/пробелы из ключей (бывает при копировании или передаче через PowerShell)
-for _k in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY", "GEMINI_API_KEY", "IG_USERNAME", "IG_PASSWORD"):
+for _k in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY", "GEMINI_API_KEY", "GROQ_API_KEY", "IG_USERNAME", "IG_PASSWORD"):
     if _k in os.environ:
         os.environ[_k] = os.environ[_k].lstrip("﻿").strip()
 logging.basicConfig(
@@ -149,7 +149,8 @@ def main() -> int:
             failed += 1
             log.error("Ошибка записи %s: %s", p.post_url, e)
 
-    log.info("Итог: сохранено %d, отклонено %d, ошибок %d", saved, rejected, failed)
+    log.info("Итог: сохранено %d, отклонено %d, ошибок %d (разобрал Gemini: %d, Groq: %d)",
+             saved, rejected, failed, parser.stats["gemini"], parser.stats["groq"])
     return 0
 
 

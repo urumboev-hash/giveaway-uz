@@ -10,7 +10,7 @@
 3. Project Settings → API: скопируйте `Project URL`, `anon public` key и `service_role` key.
 
 ## 2. Ключи
-- `backend/.env` (копия `backend/.env.example`): `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (service_role), `GEMINI_API_KEY` (aistudio.google.com), `IG_USERNAME`/`IG_PASSWORD` (отдельный аккаунт, не личный).
+- `backend/.env` (копия `backend/.env.example`): `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (service_role), `GEMINI_API_KEY` (aistudio.google.com), `GROQ_API_KEY` (console.groq.com, запасной ИИ, когда у Gemini кончился лимит), `IG_USERNAME`/`IG_PASSWORD` (отдельный аккаунт, не личный).
 - `frontend/.env.local` (копия `frontend/.env.example`): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (anon!), `NEXT_PUBLIC_SITE_URL`.
 
 ## 3. Локальный запуск

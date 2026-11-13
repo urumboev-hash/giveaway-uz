@@ -2,6 +2,7 @@
 .env
 .env.local
 backend/.ig_session/
+backend/logs/
 
 # python
 __pycache__/
