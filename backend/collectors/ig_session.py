@@ -1,6 +1,7 @@
 """Единый экземпляр Instaloader с аккуратным логином."""
 from __future__ import annotations
 
+import base64
 import logging
 import os
 from pathlib import Path
@@ -49,13 +50,26 @@ def get_loader() -> tuple[instaloader.Instaloader, bool]:
 
     user = os.getenv("IG_USERNAME", "").strip()
     password = os.getenv("IG_PASSWORD", "").strip()
-    if user and password:
-        session_file = _SESSION_DIR / f"session-{user}"
+    session_file = _SESSION_DIR / f"session-{user}" if user else None
+
+    # На GitHub сессию передаём секретом IG_SESSION_B64 (файл сессии в base64) —
+    # вход один раз делается на ноутбуке командой: instaloader --login ИМЯ
+    b64 = os.getenv("IG_SESSION_B64", "").strip()
+    if user and b64 and session_file is not None:
+        try:
+            _SESSION_DIR.mkdir(exist_ok=True)
+            session_file.write_bytes(base64.b64decode(b64))
+        except Exception as e:
+            log.warning("Instagram: IG_SESSION_B64 не читается (%s)", e)
+
+    if user and (password or (session_file and session_file.exists())):
         try:
             if session_file.exists():
+                # test_login() ходит в старый graphql и часто получает «подождите» даже с живой сессией,
+                # поэтому не проверяем: если сессия устарела, сборщики сами получат отказ и пропустят
                 loader.load_session_from_file(user, str(session_file))
                 _logged_in = True
-                log.info("Instagram: сессия загружена из файла")
+                log.info("Instagram: сессия %s загружена", user)
             else:
                 loader.login(user, password)
                 _SESSION_DIR.mkdir(exist_ok=True)
@@ -66,7 +80,7 @@ def get_loader() -> tuple[instaloader.Instaloader, bool]:
             log.warning("Instagram: не удалось войти (%s). Работаем анонимно.", e)
             _logged_in = False
     else:
-        log.info("Instagram: IG_USERNAME/IG_PASSWORD не заданы — анонимный режим")
+        log.info("Instagram: нет IG_USERNAME и сессии/пароля — анонимный режим")
 
     _loader = loader
     return loader, _logged_in
