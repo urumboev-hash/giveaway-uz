@@ -12,7 +12,8 @@ except ImportError:  # pragma: no cover
     from duckduckgo_search import DDGS  # type: ignore
 
 # Поисковые движки ddgs по порядку: берём первый, что вернул посты Instagram
-BACKENDS = ["yahoo", "duckduckgo", "brave", "startpage", "mojeek"]
+# Яндекс первым: хорошо знает узбекский сегмент. Yahoo часто блокирует серверы GitHub.
+BACKENDS = ["yandex", "google", "yahoo", "bing", "auto", "duckduckgo", "brave", "mojeek"]
 
 from .base import RawPost, parse_post_url
 
