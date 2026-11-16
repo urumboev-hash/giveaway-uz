@@ -38,7 +38,7 @@ log = logging.getLogger("main")
 MAX_AI_CALLS_PER_RUN = int(os.getenv("MAX_AI_CALLS_PER_RUN", "150"))
 AI_BATCH = int(os.getenv("AI_BATCH", "5"))
 # посты старше этого даже не отправляем в ИИ — почти всегда уже прошли
-MAX_POST_AGE_DAYS = int(os.getenv("MAX_POST_AGE_DAYS", "30"))
+MAX_POST_AGE_DAYS = int(os.getenv("MAX_POST_AGE_DAYS", "21"))
 # акция без даты окончания скрывается через столько дней после публикации
 NO_END_DATE_TTL_DAYS = int(os.getenv("NO_END_DATE_TTL_DAYS", "21"))
 TASHKENT = timezone(timedelta(hours=5))  # в Узбекистане нет перехода на летнее время
