@@ -97,6 +97,9 @@ is_valid = false, если:
 - дат нет, а пост опубликован больше 30 дней назад — скорее всего уже прошло;
 - явно не для Узбекистана.
 Если дата не указана, но пост свежий и это явно действующая бесплатная раздача или розыгрыш — считай актуальным.
+Текст часто обрезан (это сниппет из поиска). Если видно, что это розыгрыш/конкурс с условиями вроде
+«obuna boʻling», «izoh qoldiring», «подпишись», «отметь друзей» — считай его валидным, даже если приз или срок
+не поместились в отрывок: опиши приз как «Подробности в посте».
 Относительные даты («завтра», «в субботу», «ertaga», «shanba kuni») считай от даты публикации поста.
 
 Если is_valid = true, заполни на РУССКОМ языке:
@@ -116,8 +119,10 @@ is_valid = false, если:
 - end_date_iso: дата окончания/подведения итогов в формате ГГГГ-ММ-ДД; если год не указан — ближайший такой день
   после даты публикации; если даты нет — пустая строка.
 - end_time: время окончания/итогов ЧЧ:ММ, если указано; иначе пустая строка.
-- title_uz, prize_uz, conditions_uz: те же title, prize, conditions на УЗБЕКСКОМ языке латиницей
-  (например «Bepul master-klass», «@brand sahifasiga obuna bo'ling», «Postga layk bosing»).
+- title_uz, prize_uz, conditions_uz: те же title, prize, conditions на УЗБЕКСКОМ языке латиницей по официальной
+  орфографии (oʻ, gʻ, ʼ), естественно, как пишут узбекские бренды в Instagram, без единого русского слова; бренды,
+  @аккаунты и модели не переводи, «сум» → «soʻm» (например «Bepul master-klass», «@brand sahifasiga obuna boʻling»,
+  «Postga layk bosing», «2 ta doʻstingizni belgilang»).
 
 Если is_valid = false — остальные поля заполни пустыми строками/пустым списком, category = «Другое», region = «all».
 Отвечай только JSON."""
@@ -148,6 +153,30 @@ BATCH_SCHEMA = {
 BATCH_SHAPE = (
     '\n\nФормат ответа — JSON-объект {"items": [...]}, где каждый элемент — объект с полем "n" (номер поста) '
     "и ключами:" + JSON_SHAPE.split("ключами:", 1)[1]
+)
+
+TRANSLATE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "items": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "n": {"type": "INTEGER"},
+                    "title_uz": {"type": "STRING"},
+                    "prize_uz": {"type": "STRING"},
+                    "conditions_uz": {"type": "ARRAY", "items": {"type": "STRING"}},
+                },
+                "required": ["n", "title_uz", "prize_uz", "conditions_uz"],
+            },
+        }
+    },
+    "required": ["items"],
+}
+TRANSLATE_SHAPE = (
+    '\n\nФормат ответа — JSON-объект {"items": [{"n": 1, "title_uz": "...", "prize_uz": "...", '
+    '"conditions_uz": ["..."]}]}.'
 )
 
 EMPTY = {
@@ -257,6 +286,43 @@ class AIParser:
                 continue
             if 1 <= n <= len(todo):
                 out[todo[n - 1]] = self._normalize(item)
+        return out
+
+    def translate_many(self, items: list[dict]) -> list[dict | None]:
+        """Перевод на узбекский (латиница) для акций, где перевода нет или ИИ оставил русский текст.
+
+        items: [{"title", "prize", "conditions"}] → [{"title_uz", "prize_uz", "conditions_uz"} | None].
+        """
+        if not items:
+            return []
+        system = (
+            "Ты — профессиональный переводчик с русского на узбекский язык (латиница, официальная орфография: "
+            "oʻ, gʻ, ʼ). Переводи естественно, как пишут в узбекском Instagram, без кальки. Имена брендов, @аккаунты, "
+            "модели (iPhone 17) и суммы не переводи; «сум» → «soʻm». Условия — в повелительном наклонении на «-ing» "
+            "(«@brand sahifasiga obuna boʻling», «Postga layk bosing», «2 ta doʻstingizni belgilang»). "
+            "Ни одного русского слова в ответе."
+        )
+        blocks = []
+        for n, it in enumerate(items, 1):
+            conds = "\n".join(f"- {c}" for c in (it.get("conditions") or []))
+            blocks.append(f"### {n}\nЗаголовок: {it.get('title') or ''}\nОписание: {it.get('prize') or ''}\nУсловия:\n{conds}")
+        prompt = (
+            f"Переведи {len(items)} карточек. Верни объект с полем items — массив ровно из {len(items)} объектов "
+            "с полями n (номер), title_uz, prize_uz, conditions_uz (массив, столько же пунктов).\n\n" + "\n\n".join(blocks)
+        )
+        raw = self._ask(system, prompt, TRANSLATE_SCHEMA, TRANSLATE_SHAPE)
+        out: list[dict | None] = [None] * len(items)
+        for it in (raw or {}).get("items") or []:
+            try:
+                n = int(it.get("n"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if 1 <= n <= len(items) and it.get("title_uz"):
+                out[n - 1] = {
+                    "title_uz": str(it.get("title_uz") or "").strip()[:120],
+                    "prize_uz": str(it.get("prize_uz") or "").strip()[:1000],
+                    "conditions_uz": [str(c).strip() for c in (it.get("conditions_uz") or []) if str(c).strip()][:8],
+                }
         return out
 
     def _ask(self, system: str, prompt: str, schema: dict, shape: str) -> dict | None:

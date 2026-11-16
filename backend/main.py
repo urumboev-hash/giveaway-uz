@@ -59,9 +59,66 @@ FREE_WORDS = (
 )
 
 
+UZ_WORDS = (
+    "узбекистан", "ташкент", "toshkent", "tashkent", "o'zbekiston", "oʻzbekiston", "uzbekistan", "so'm", "сум",
+    "samarqand", "самарканд", "buxoro", "бухар", "farg'ona", "ферган", "namangan", "наманган", "andijon", "андижан",
+    "qarshi", "карши", "navoiy", "навои", "jizzax", "джизак", "termiz", "термез", "urganch", "ургенч", "nukus",
+    "нукус", "guliston", "гулистан", "chirchiq", "чирчик", "qo'qon", "коканд", "bo'ling", "obuna", "sovg'a",
+    "yutib", "konkurs", "g'olib", "ishtirok", "shartlar",
+)
+
+# Чужие страны — поиск по «розыгрыш дарим» часто приносит Россию/Казахстан/Беларусь; их отсеиваем без ИИ
+FOREIGN_RE = re.compile(
+    r"₽|\bруб\b|рублей|\bbyn\b|тенге|₸|росси|москв|спб|санкт-петербург|казахстан|kazakhstan|беларус|минск|"
+    r"\.ru\b|\.kz\b|\.by\b|костанай|алмат|астан|караганд|шымкент|сургут|якутск|челябинск|ставропол|"
+    r"екатеринбург|новосибирск|краснодар|казан[ьи]|самар[аеы]\b|уф[аеы]\b|перм[ьи]|омск|тюмен|иркутск|"
+    r"хабаровск|владивосток|ростов|воронеж|нижн|\bнн\b|кыргызстан|бишкек|таджикистан|душанбе",
+    re.IGNORECASE,
+)
+CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
+
+
+def is_foreign(p: RawPost) -> bool:
+    """Явно не Узбекистан: есть приметы другой страны и нет ни одной узбекской."""
+    t = (p.text or "").lower()
+    return bool(FOREIGN_RE.search(t)) and not any(w in t for w in UZ_WORDS)
+
+
 def free_score(p: RawPost) -> int:
     t = (p.text or "").lower()
-    return sum(w in t for w in FREE_WORDS)
+    # узбекские приметы весят больше: такие посты ИИ проверяет первыми
+    return sum(w in t for w in FREE_WORDS) + 2 * sum(w in t for w in UZ_WORDS)
+
+
+def needs_translation(row: dict) -> bool:
+    """Нет узбекского текста или ИИ оставил в нём кириллицу (русский)."""
+    uz = " ".join([row.get("title_uz") or "", row.get("prize_uz") or "", *(row.get("conditions_uz") or [])])
+    if not (row.get("title_uz") or "").strip():
+        return True
+    return bool(CYRILLIC_RE.search(uz))
+
+
+def translate_missing(sb: Client, parser, limit: int = 60, batch: int = 6) -> None:
+    """Дописывает узбекский перевод активным акциям, у которых его нет (или он на русском)."""
+    try:
+        rows = (sb.table("giveaways").select("id,title,prize,conditions,title_uz,prize_uz,conditions_uz")
+                .eq("is_active", True).limit(1000).execute().data or [])
+    except Exception as e:
+        log.warning("Перевод: не удалось загрузить акции: %s", e)
+        return
+    todo = [r for r in rows if needs_translation(r)][:limit]
+    done = 0
+    for i in range(0, len(todo), batch):
+        part = todo[i : i + batch]
+        for r, tr in zip(part, parser.translate_many(part)):
+            if not tr or CYRILLIC_RE.search(tr["title_uz"]):
+                continue
+            try:
+                sb.table("giveaways").update(tr).eq("id", r["id"]).execute()
+                done += 1
+            except Exception as e:
+                log.warning("Перевод не сохранён: %s", e)
+    log.info("Перевод на узбекский: нужно %d, переведено %d", len(todo), done)
 
 
 def get_supabase() -> Client:
@@ -177,6 +234,18 @@ def main() -> int:
                 log.warning("Не удалось записать старые посты: %s", e)
     posts = fresh
 
+    foreign = [p for p in posts if is_foreign(p)]
+    if foreign:
+        log.info("Другая страна (Россия/Казахстан/...), пропускаем без ИИ: %d", len(foreign))
+        if sb is not None:
+            try:
+                sb.table("rejected_posts").upsert(
+                    [{"post_url": p.post_url, "reason": "foreign"} for p in foreign], on_conflict="post_url"
+                ).execute()
+            except Exception as e:
+                log.warning("Не удалось записать чужие посты: %s", e)
+        posts = [p for p in posts if not is_foreign(p)]
+
     posts.sort(key=free_score, reverse=True)
     if len(posts) > MAX_AI_CALLS_PER_RUN:
         log.info("Проверим %d самых вероятных, остальные %d — в следующий запуск",
@@ -239,6 +308,7 @@ def main() -> int:
 
     if sb is not None:
         deactivate_expired(sb)
+        translate_missing(sb, parser)
         try:
             import notifier
 

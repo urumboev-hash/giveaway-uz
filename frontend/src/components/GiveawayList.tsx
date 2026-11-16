@@ -119,7 +119,8 @@ export default function GiveawayList({ items, lang }: { items: Giveaway[]; lang:
             </span>
           </label>
         </div>
-        <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none]">
+        {/* на телефоне — прокрутка вбок, на широком экране — перенос строк, чтобы последняя кнопка не обрезалась */}
+        <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] sm:flex-wrap sm:overflow-visible">
           {chips.map((c) => {
             const active = filter === c.key;
             return (
