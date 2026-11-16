@@ -14,6 +14,7 @@ export default function GiveawayList({ items, lang }: { items: Giveaway[]; lang:
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [region, setRegion] = useLocalStorage<string>("giveuz:region", "");
+  const [sort, setSort] = useState<"new" | "ending">("new");
   const [joined, setJoined] = useLocalStorage<string[]>("giveuz:joined", []);
   const [checks, setChecks] = useLocalStorage<Record<string, number[]>>("giveuz:checks", {});
 
@@ -33,13 +34,19 @@ export default function GiveawayList({ items, lang }: { items: Giveaway[]; lang:
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return inRegion.filter((g) => {
+    const list = inRegion.filter((g) => {
       if (filter === "mine" && !joinedSet.has(g.id)) return false;
       if (filter !== "all" && filter !== "mine" && g.category !== filter) return false;
       if (!q) return true;
       return [g.title, g.prize, g.title_uz, g.prize_uz, g.account_name].some((v) => v?.toLowerCase().includes(q));
     });
-  }, [inRegion, query, filter, joinedSet]);
+    if (sort === "ending") {
+      // сначала те, у кого известен срок (ближайший первым), затем без срока
+      const end = (g: Giveaway) => (g.ends_at ? new Date(g.ends_at).getTime() : Number.MAX_SAFE_INTEGER);
+      return [...list].sort((a, b) => end(a) - end(b));
+    }
+    return list; // с сервера уже отсортировано: новые сверху
+  }, [inRegion, query, filter, joinedSet, sort]);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
@@ -136,6 +143,26 @@ export default function GiveawayList({ items, lang }: { items: Giveaway[]; lang:
       </div>
 
       <NotifyButton lang={lang} region={region} />
+
+      <div className="mb-3 flex justify-end">
+        <div className="flex overflow-hidden rounded-full border border-zinc-200 text-xs font-semibold dark:border-zinc-800">
+          {(["new", "ending"] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setSort(s)}
+              aria-pressed={sort === s}
+              className={`px-3 py-1.5 transition ${
+                sort === s
+                  ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900"
+                  : "bg-white text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300"
+              }`}
+            >
+              {s === "new" ? t.sortNew : t.sortEnding}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {filtered.length === 0 ? (
         <div className="py-20 text-center text-zinc-500">

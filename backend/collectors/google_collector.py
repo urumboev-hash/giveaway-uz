@@ -35,6 +35,13 @@ BASE_QUERIES = [
     "site:instagram.com sovg'a o'yini shartlari",
     "site:instagram.com конкурс подарок Узбекистан",
     "site:instagram.com бесплатный мастер-класс Ташкент",
+    # узбекский кириллицей и другие формулировки
+    "site:instagram.com совға ютиб олинг",
+    "site:instagram.com конкурс шартлари совға",
+    "site:instagram.com bepul aksiya",
+    "site:instagram.com giveaway o'zbekiston",
+    "site:instagram.com sovrin o'yini",
+    "site:instagram.com розыгрыш дарим подписчикам Узбекистан",
 ]
 
 # Регионы: (русское название, узбекское). Каждый запуск берём часть, за сутки обходим все.
@@ -64,29 +71,52 @@ QUERIES = BASE_QUERIES  # совместимость со старым кодо�
 _HANDLE_RE = re.compile(r"@([A-Za-z0-9._]{2,30})")
 
 
-def collect(max_results_per_query: int = 25) -> list[RawPost]:
+# Только свежее: без фильтра поисковик отдаёт в основном посты прошлых лет (проверено: 0–2 свежих из 7,
+# с фильтром «за месяц» — 7 из 7). Страницы 2–3 дают ещё по ~7 новых постов на запрос.
+TIMELIMIT = "m"
+PAGES = 3
+
+
+def _search(ddgs, query: str, backend: str, page: int, max_results: int) -> list[dict]:
+    """Один запрос с одной повторной попыткой при сетевой ошибке."""
+    for attempt in range(2):
+        try:
+            return ddgs.text(query, region="ru-ru", max_results=max_results, backend=backend,
+                             timelimit=TIMELIMIT, page=page) or []
+        except Exception as e:  # rate limit / сетевые ошибки / нет результатов
+            msg = str(e)
+            if "No results" in msg or attempt:
+                log.debug("Запрос %r через %s (стр. %d): %s", query, backend, page, msg[:120])
+                return []
+            time.sleep(random.uniform(3, 6))
+    return []
+
+
+def collect(max_results_per_query: int = 10) -> list[RawPost]:
     posts: dict[str, RawPost] = {}
     try:
         ddgs = DDGS()
     except Exception as e:
-        log.error("DuckDuckGo недоступен: %s", e)
+        log.error("Поиск недоступен: %s", e)
         return []
 
+    working = list(BACKENDS)  # поисковики, которые в этом запуске хоть что-то вернули, идут первыми
     for query in build_queries():
-        # берём результаты с двух поисковиков, которые что-то нашли — у каждого свой индекс
         results: list[dict] = []
-        hits = 0
-        for backend in BACKENDS:
-            try:
-                found = ddgs.text(query, region="ru-ru", max_results=max_results_per_query, backend=backend) or []
-            except Exception as e:  # rate limit / сетевые ошибки / нет результатов
-                log.info("Запрос %r через %s не выполнен: %s", query, backend, str(e)[:120])
+        for backend in working:
+            page_results = _search(ddgs, query, backend, 1, max_results_per_query)
+            if not any(parse_post_url(r.get("href", "")) for r in page_results):
                 continue
-            if any(parse_post_url(r.get("href", "")) for r in found):
-                results.extend(found)
-                hits += 1
-                if hits >= 2:
+            results.extend(page_results)
+            for page in range(2, PAGES + 1):
+                time.sleep(random.uniform(1.5, 3))
+                more = _search(ddgs, query, backend, page, max_results_per_query)
+                if not more:
                     break
+                results.extend(more)
+            working.remove(backend)
+            working.insert(0, backend)
+            break
 
         for r in results:
             parsed = parse_post_url(r.get("href", ""))

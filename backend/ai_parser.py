@@ -131,6 +131,25 @@ JSON_SHAPE = (
     '"title_uz", "prize_uz" (строки), "conditions_uz" (массив строк).'
 )
 
+BATCH_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "items": {
+            "type": "ARRAY",
+            "items": {
+                **RESPONSE_SCHEMA,
+                "properties": {"n": {"type": "INTEGER"}, **RESPONSE_SCHEMA["properties"]},
+                "required": ["n", *RESPONSE_SCHEMA["required"]],
+            },
+        }
+    },
+    "required": ["items"],
+}
+BATCH_SHAPE = (
+    '\n\nФормат ответа — JSON-объект {"items": [...]}, где каждый элемент — объект с полем "n" (номер поста) '
+    "и ключами:" + JSON_SHAPE.split("ключами:", 1)[1]
+)
+
 EMPTY = {
     "is_valid": False, "title": "", "prize": "", "conditions": [], "end_date": "", "category": "Другое",
     "region": "all", "start_date": "", "start_time": "", "end_date_iso": "", "end_time": "",
@@ -188,26 +207,80 @@ class AIParser:
             regions="\n".join(f"  {k} — {v}" for k, v in REGIONS.items()),
         )
 
+        raw = self._ask(system, prompt, RESPONSE_SCHEMA, JSON_SHAPE)
+        return self._normalize(raw) if isinstance(raw, dict) else None
+
+    def parse_many(self, posts: list[tuple[str, str | None, date | None]]) -> list[dict | None]:
+        """Разбирает несколько постов ОДНИМ запросом к ИИ (лимит бесплатного Gemini — в запросах, не в тексте).
+
+        posts: [(текст, аккаунт, дата публикации)]. Возвращает список той же длины; None — не удалось разобрать.
+        """
+        out: list[dict | None] = [None] * len(posts)
+        todo = []
+        for i, (text, _, _) in enumerate(posts):
+            if not text or len(text.strip()) < 15:
+                out[i] = dict(EMPTY)
+            else:
+                todo.append(i)
+        if not todo:
+            return out
+        if len(todo) == 1:
+            i = todo[0]
+            out[i] = self.parse(*posts[i])
+            return out
+
+        system = SYSTEM_PROMPT.format(
+            today=date.today().isoformat(),
+            posted="указана у каждого поста отдельно",
+            categories=", ".join(CATEGORIES),
+            regions="\n".join(f"  {k} — {v}" for k, v in REGIONS.items()),
+        )
+        blocks = []
+        for n, i in enumerate(todo, 1):
+            text, account, posted = posts[i]
+            blocks.append(
+                f"### Пост {n} — аккаунт @{account or 'неизвестно'}, опубликован {posted.isoformat() if posted else 'неизвестно'}\n"
+                f"{text[:2500]}"
+            )
+        prompt = (
+            f"Разбери КАЖДЫЙ из {len(todo)} постов отдельно и независимо. Верни объект с полем items — массивом "
+            f"ровно из {len(todo)} объектов; у каждого поле n — номер поста.\n\n" + "\n\n".join(blocks)
+        )
+        raw = self._ask(system, prompt, BATCH_SCHEMA, BATCH_SHAPE)
+        items = raw.get("items") if isinstance(raw, dict) else None
+        if not isinstance(items, list):
+            return out  # не получилось — посты попробуем в следующий запуск
+        for item in items:
+            try:
+                n = int(item.get("n"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if 1 <= n <= len(todo):
+                out[todo[n - 1]] = self._normalize(item)
+        return out
+
+    def _ask(self, system: str, prompt: str, schema: dict, shape: str) -> dict | None:
+        """Gemini по цепочке моделей, затем Groq. Возвращает «сырой» JSON-объект."""
         if not self.gemini_off:
-            result = self._gemini(system, prompt)
+            result = self._gemini(system, prompt, schema)
             if result is not None:
                 self.stats["gemini"] += 1
                 return result
         if self.groq_model:
-            result = self._groq(system, prompt)
+            result = self._groq(system, prompt, shape)
             if result is not None:
                 self.stats["groq"] += 1
             return result
         return None
 
     # ---------- Gemini ----------
-    def _gemini(self, system: str, prompt: str) -> dict | None:
+    def _gemini(self, system: str, prompt: str, schema: dict) -> dict | None:
         from google.genai import types
 
         config = types.GenerateContentConfig(
             system_instruction=system,
             response_mime_type="application/json",
-            response_schema=RESPONSE_SCHEMA,
+            response_schema=schema,
             temperature=0.1,
         )
         # 2 круга по цепочке моделей; перегруженную (503) модель пропускаем только для этого поста,
@@ -217,7 +290,8 @@ class AIParser:
                 self._wait("_last_gemini", self.min_interval)
                 try:
                     resp = self.gemini.models.generate_content(model=model, contents=prompt, config=config)
-                    return self._normalize(json.loads(resp.text or "{}"))
+                    data = json.loads(resp.text or "{}")
+                    return data if isinstance(data, dict) else None
                 except json.JSONDecodeError as e:
                     log.warning("Gemini %s вернул не-JSON: %s", model, e)
                     return None
@@ -269,11 +343,11 @@ class AIParser:
         log.error("Groq: подходящая модель не найдена (%s)", ", ".join(sorted(available))[:300])
         return None
 
-    def _groq(self, system: str, prompt: str) -> dict | None:
+    def _groq(self, system: str, prompt: str, shape: str) -> dict | None:
         body = {
             "model": self.groq_model,
             "messages": [
-                {"role": "system", "content": system + JSON_SHAPE},
+                {"role": "system", "content": system + shape},
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.1,
@@ -298,7 +372,8 @@ class AIParser:
                 return None
             try:
                 content = r.json()["choices"][0]["message"]["content"]
-                return self._normalize(json.loads(content or "{}"))
+                data = json.loads(content or "{}")
+                return data if isinstance(data, dict) else None
             except (KeyError, IndexError, json.JSONDecodeError) as e:
                 log.warning("Groq вернул не-JSON: %s", e)
                 return None

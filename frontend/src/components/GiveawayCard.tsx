@@ -33,7 +33,29 @@ export default function GiveawayCard({ g, lang, joined, checked, onToggleJoined,
   const [imgOk, setImgOk] = useState(Boolean(g.image_url));
   // статус зависит от текущего времени — считаем только в браузере, чтобы не было расхождений с серверной версией
   const [status, setStatus] = useState<Status>(null);
-  useEffect(() => setStatus(statusOf(g, new Date())), [g]);
+  const [isNew, setIsNew] = useState(false);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    const now = new Date();
+    setStatus(statusOf(g, now));
+    const published = new Date(g.posted_at ?? g.created_at).getTime();
+    setIsNew(now.getTime() - published < 48 * 3600_000);
+  }, [g]);
+
+  async function share() {
+    const text = `${(lang === "uz" && g.title_uz) || g.title || ""} — GiveUz`;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: text, text, url: g.post_url });
+        return;
+      }
+      await navigator.clipboard.writeText(g.post_url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* пользователь закрыл окно «Поделиться» */
+    }
+  }
 
   const uz = lang === "uz";
   const title = (uz && g.title_uz) || g.title || t.giveaway;
@@ -74,6 +96,11 @@ export default function GiveawayCard({ g, lang, joined, checked, onToggleJoined,
           <span className="rounded-full bg-zinc-100 px-2.5 py-1 font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
             📍 {region}
           </span>
+          {isNew && (
+            <span className="rounded-full bg-fuchsia-100 px-2.5 py-1 font-semibold text-fuchsia-800 dark:bg-fuchsia-950 dark:text-fuchsia-300">
+              {t.fresh}
+            </span>
+          )}
           {status && <span className={`rounded-full px-2.5 py-1 font-semibold ${STATUS_CLS[status]}`}>{t[status]}</span>}
         </div>
 
@@ -144,7 +171,7 @@ export default function GiveawayCard({ g, lang, joined, checked, onToggleJoined,
           </a>
         )}
 
-        <div className={`grid grid-cols-[1fr_auto] gap-2 ${g.account_name ? "" : "mt-auto"}`}>
+        <div className={`grid grid-cols-[1fr_auto_auto] gap-2 ${g.account_name ? "" : "mt-auto"}`}>
           <a
             href={g.post_url}
             target="_blank"
@@ -162,6 +189,15 @@ export default function GiveawayCard({ g, lang, joined, checked, onToggleJoined,
             }`}
           >
             {joined ? t.joined : t.join}
+          </button>
+          <button
+            type="button"
+            onClick={share}
+            title={copied ? t.copied : t.share}
+            aria-label={t.share}
+            className="rounded-2xl border border-zinc-200 px-3 py-3 text-sm transition hover:border-pink-400 dark:border-zinc-700"
+          >
+            {copied ? "✓" : "↗"}
           </button>
         </div>
       </div>

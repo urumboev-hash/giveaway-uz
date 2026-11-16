@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 
 from dotenv import load_dotenv
@@ -33,7 +34,9 @@ for noisy in ("primp", "httpx", "httpx2", "httpcore", "ddgs", "ddgs.ddgs", "goog
     logging.getLogger(noisy).setLevel(logging.WARNING)
 log = logging.getLogger("main")
 
-MAX_AI_CALLS_PER_RUN = int(os.getenv("MAX_AI_CALLS_PER_RUN", "60"))
+# сколько постов за запуск отдаём ИИ; разбираются пачками по AI_BATCH за один запрос
+MAX_AI_CALLS_PER_RUN = int(os.getenv("MAX_AI_CALLS_PER_RUN", "150"))
+AI_BATCH = int(os.getenv("AI_BATCH", "5"))
 # посты старше этого даже не отправляем в ИИ — почти всегда уже прошли
 MAX_POST_AGE_DAYS = int(os.getenv("MAX_POST_AGE_DAYS", "30"))
 # акция без даты окончания скрывается через столько дней после публикации
@@ -75,9 +78,14 @@ def collect_all(only: str | None) -> list[RawPost]:
         "account": accounts_collector.collect,
         "hashtag": hashtag_collector.collect,
     }
+    # без входа Instagram страницы брендов и хэштеги не отдаёт — не тратим на них ~6 минут каждого запуска
+    has_ig = bool(os.getenv("IG_USERNAME", "").strip() and (os.getenv("IG_PASSWORD") or os.getenv("IG_SESSION_B64")))
     posts: list[RawPost] = []
     for name, fn in sources.items():
         if only and only != name:
+            continue
+        if name in ("account", "hashtag") and not has_ig and only != name:
+            log.info("Сборщик %s пропущен: нет входа в Instagram", name)
             continue
         try:
             posts.extend(fn())
@@ -91,6 +99,27 @@ def collect_all(only: str | None) -> list[RawPost]:
         if prev is None or len(p.text) > len(prev.text):
             unique[p.post_url] = p
     return list(unique.values())
+
+
+def _norm(s: str | None) -> str:
+    """Название без регистра, пунктуации и города в скобках — для поиска дублей."""
+    s = re.sub(r"\(.*?\)", " ", (s or "").lower())
+    return " ".join(re.findall(r"[\w']+", s))
+
+
+def dedupe_key(row: dict) -> tuple[str, str]:
+    """Одна и та же акция часто выложена несколькими постами одного аккаунта (пост + рилс + повтор)."""
+    return (row.get("account_name") or "").lower(), _norm(row.get("title"))
+
+
+def active_keys(sb: Client) -> set[tuple[str, str]]:
+    try:
+        rows = sb.table("giveaways").select("account_name,title").eq("is_active", True).limit(1000).execute().data or []
+    except Exception as e:
+        log.warning("Не удалось загрузить активные акции для поиска дублей: %s", e)
+        return set()
+    # без аккаунта дубли не ищем — слишком велик риск склеить разные акции
+    return {dedupe_key(r) for r in rows if r.get("account_name")}
 
 
 def known_urls(sb: Client, urls: list[str]) -> set[str]:
@@ -158,37 +187,52 @@ def main() -> int:
     google_external = [p for p in posts if p.source_type == "google"]
     google_collector.enrich(google_external, limit=10)
 
+    def reject(p: RawPost, reason: str, why: str) -> None:
+        log.info("✗ %s — %s", p.post_url, why)
+        if sb is not None:
+            try:
+                sb.table("rejected_posts").upsert({"post_url": p.post_url, "reason": reason},
+                                                  on_conflict="post_url").execute()
+            except Exception as e:
+                log.warning("Не удалось записать rejected: %s", e)
+
+    existing = active_keys(sb) if sb is not None else set()
     saved = rejected = failed = 0
-    for p in posts:
-        result = parser.parse(p.text, p.account_name, p.posted_at.astimezone(TASHKENT).date() if p.posted_at else None)
-        if result is None:
-            failed += 1  # ошибка API — не помечаем, попробуем в следующий раз
-            continue
+    for start in range(0, len(posts), AI_BATCH):
+        batch = posts[start : start + AI_BATCH]
+        results = parser.parse_many(
+            [(p.text, p.account_name, p.posted_at.astimezone(TASHKENT).date() if p.posted_at else None) for p in batch]
+        )
+        for p, result in zip(batch, results):
+            if result is None:
+                failed += 1  # ошибка API — не помечаем, попробуем в следующий раз
+                continue
 
-        row = build_row(p.post_url, p.account_name, p.image_url, p.source_type, p.posted_at, result)
-        if not result["is_valid"] or row is None:
-            rejected += 1
-            log.info("✗ %s — %s", p.post_url, "уже прошло" if result["is_valid"] else "не халява/неактуально")
-            if sb is not None:
-                try:
-                    sb.table("rejected_posts").upsert(
-                        {"post_url": p.post_url, "reason": "expired" if result["is_valid"] else "ai_invalid"},
-                        on_conflict="post_url",
-                    ).execute()
-                except Exception as e:
-                    log.warning("Не удалось записать rejected: %s", e)
-            continue
+            row = build_row(p.post_url, p.account_name, p.image_url, p.source_type, p.posted_at, result)
+            if not result["is_valid"] or row is None:
+                rejected += 1
+                reject(p, "expired" if result["is_valid"] else "ai_invalid",
+                       "уже прошло" if result["is_valid"] else "не халява/неактуально")
+                continue
 
-        log.info("✓ %s — %s [%s, %s]", p.post_url, row["title"], row["category"], row["region"])
-        if sb is None:
-            saved += 1
-            continue
-        try:
-            sb.table("giveaways").upsert(row, on_conflict="post_url", ignore_duplicates=True).execute()
-            saved += 1
-        except Exception as e:
-            failed += 1
-            log.error("Ошибка записи %s: %s", p.post_url, e)
+            if row.get("account_name"):
+                key = dedupe_key(row)
+                if key in existing:
+                    rejected += 1
+                    reject(p, "duplicate", f"дубль: {row['title']}")
+                    continue
+                existing.add(key)
+
+            log.info("✓ %s — %s [%s, %s]", p.post_url, row["title"], row["category"], row["region"])
+            if sb is None:
+                saved += 1
+                continue
+            try:
+                sb.table("giveaways").upsert(row, on_conflict="post_url", ignore_duplicates=True).execute()
+                saved += 1
+            except Exception as e:
+                failed += 1
+                log.error("Ошибка записи %s: %s", p.post_url, e)
 
     log.info("Итог: сохранено %d, отклонено %d, ошибок %d (разобрал Gemini: %d, Groq: %d)",
              saved, rejected, failed, parser.stats["gemini"], parser.stats["groq"])
