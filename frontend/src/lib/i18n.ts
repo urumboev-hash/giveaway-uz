@@ -184,6 +184,11 @@ export const DICT = {
 
 export type Dict = (typeof DICT)["ru"];
 
+/** Узбекская латиница по официальной орфографии: o' g' → oʻ gʻ, остальные апострофы между буквами → ʼ. */
+export function uzOrtho(s: string): string {
+  return s.replace(/([OoGg])['’‘`]/g, "$1ʻ").replace(/([A-Za-zʻ])['’`](?=[A-Za-z])/g, "$1ʼ");
+}
+
 const MONTHS: Record<Lang, string[]> = {
   ru: ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"],
   uz: ["yanvar", "fevral", "mart", "aprel", "may", "iyun", "iyul", "avgust", "sentabr", "oktabr", "noyabr", "dekabr"],

@@ -1,7 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CATEGORY_LABELS, DICT, formatDate, REGION_LABELS, sameTashkentDay, type Lang, type RegionCode } from "@/lib/i18n";
+import {
+  CATEGORY_LABELS,
+  DICT,
+  formatDate,
+  REGION_LABELS,
+  sameTashkentDay,
+  uzOrtho,
+  type Lang,
+  type RegionCode,
+} from "@/lib/i18n";
 import { CATEGORY_EMOJI, type Giveaway } from "@/lib/types";
 
 interface Props {
@@ -58,9 +67,9 @@ export default function GiveawayCard({ g, lang, joined, checked, onToggleJoined,
   }
 
   const uz = lang === "uz";
-  const title = (uz && g.title_uz) || g.title || t.giveaway;
-  const prize = (uz && g.prize_uz) || g.prize;
-  const condUz = Array.isArray(g.conditions_uz) && g.conditions_uz.length ? g.conditions_uz : null;
+  const title = (uz && g.title_uz && uzOrtho(g.title_uz)) || g.title || t.giveaway;
+  const prize = (uz && g.prize_uz && uzOrtho(g.prize_uz)) || g.prize;
+  const condUz = Array.isArray(g.conditions_uz) && g.conditions_uz.length ? g.conditions_uz.map(uzOrtho) : null;
   const conditions = (uz && condUz) || (Array.isArray(g.conditions) ? g.conditions : []);
   const done = conditions.filter((_, i) => checked.includes(i)).length;
   const progress = conditions.length ? Math.round((done / conditions.length) * 100) : 0;
