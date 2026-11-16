@@ -77,16 +77,24 @@ TIMELIMIT = "m"
 PAGES = 3
 
 
-def _search(ddgs, query: str, backend: str, page: int, max_results: int) -> list[dict]:
+_errors_logged: set[str] = set()
+
+
+def _search(ddgs, query: str, backend: str, page: int, max_results: int, timelimit: str | None) -> list[dict]:
     """Один запрос с одной повторной попыткой при сетевой ошибке."""
     for attempt in range(2):
         try:
-            return ddgs.text(query, region="ru-ru", max_results=max_results, backend=backend,
-                             timelimit=TIMELIMIT, page=page) or []
+            kwargs = {"timelimit": timelimit} if timelimit else {}
+            if page > 1:
+                kwargs["page"] = page
+            return ddgs.text(query, region="ru-ru", max_results=max_results, backend=backend, **kwargs) or []
         except Exception as e:  # rate limit / сетевые ошибки / нет результатов
             msg = str(e)
+            tag = f"{backend}:{timelimit}:{msg[:40]}"
+            if tag not in _errors_logged:  # причину каждой новой ошибки пишем в журнал один раз
+                _errors_logged.add(tag)
+                log.info("Поиск %s (фильтр %s, стр. %d): %s", backend, timelimit or "нет", page, msg[:150])
             if "No results" in msg or attempt:
-                log.debug("Запрос %r через %s (стр. %d): %s", query, backend, page, msg[:120])
                 return []
             time.sleep(random.uniform(3, 6))
     return []
@@ -100,22 +108,30 @@ def collect(max_results_per_query: int = 10) -> list[RawPost]:
         log.error("Поиск недоступен: %s", e)
         return []
 
-    working = list(BACKENDS)  # поисковики, которые в этом запуске хоть что-то вернули, идут первыми
+    # (поисковик, фильтр по дате): сначала свежее за месяц, без фильтра — запасной вариант
+    # (с некоторых серверов поисковик отвечает только на запросы без фильтра). Удачные варианты идут первыми.
+    variants = [(b, tl) for tl in (TIMELIMIT, None) for b in BACKENDS]
+    misses: dict[tuple[str, str | None], int] = {}
     for query in build_queries():
         results: list[dict] = []
-        for backend in working:
-            page_results = _search(ddgs, query, backend, 1, max_results_per_query)
+        for variant in list(variants):
+            backend, timelimit = variant
+            page_results = _search(ddgs, query, backend, 1, max_results_per_query, timelimit)
             if not any(parse_post_url(r.get("href", "")) for r in page_results):
+                misses[variant] = misses.get(variant, 0) + 1
+                if misses[variant] >= 6 and len(variants) > 1:  # стабильно молчит — дальше не тратим на него время
+                    variants.remove(variant)
                 continue
+            misses[variant] = 0
             results.extend(page_results)
             for page in range(2, PAGES + 1):
                 time.sleep(random.uniform(1.5, 3))
-                more = _search(ddgs, query, backend, page, max_results_per_query)
+                more = _search(ddgs, query, backend, page, max_results_per_query, timelimit)
                 if not more:
                     break
                 results.extend(more)
-            working.remove(backend)
-            working.insert(0, backend)
+            variants.remove(variant)
+            variants.insert(0, variant)
             break
 
         for r in results:
