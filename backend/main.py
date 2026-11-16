@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import sys
+import time
 
 from dotenv import load_dotenv
 from supabase import Client, create_client
@@ -37,6 +38,8 @@ log = logging.getLogger("main")
 # сколько постов за запуск отдаём ИИ; разбираются пачками по AI_BATCH за один запрос
 MAX_AI_CALLS_PER_RUN = int(os.getenv("MAX_AI_CALLS_PER_RUN", "150"))
 AI_BATCH = int(os.getenv("AI_BATCH", "5"))
+# запуск на GitHub ограничен 45 минутами — на разбор ИИ отводим не больше этого
+AI_TIME_BUDGET_MIN = int(os.getenv("AI_TIME_BUDGET_MIN", "25"))
 # посты старше этого даже не отправляем в ИИ — почти всегда уже прошли
 MAX_POST_AGE_DAYS = int(os.getenv("MAX_POST_AGE_DAYS", "21"))
 # акция без даты окончания скрывается через столько дней после публикации
@@ -267,7 +270,12 @@ def main() -> int:
 
     existing = active_keys(sb) if sb is not None else set()
     saved = rejected = failed = 0
+    ai_started = time.monotonic()
     for start in range(0, len(posts), AI_BATCH):
+        if time.monotonic() - ai_started > AI_TIME_BUDGET_MIN * 60:
+            log.warning("Разбор ИИ идёт дольше %d мин — остальные %d постов в следующий запуск",
+                        AI_TIME_BUDGET_MIN, len(posts) - start)
+            break
         batch = posts[start : start + AI_BATCH]
         results = parser.parse_many(
             [(p.text, p.account_name, p.posted_at.astimezone(TASHKENT).date() if p.posted_at else None) for p in batch]

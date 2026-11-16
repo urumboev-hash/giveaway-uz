@@ -201,9 +201,13 @@ class AIParser:
         if gemini_key:
             from google import genai  # импорт здесь — без ключа Gemini пакет не нужен
 
-            self.gemini = genai.Client(api_key=gemini_key)
+            from google.genai import types as _types
+
+            # без ограничения запрос к перегруженной модели «висит» до 10 минут
+            self.gemini = genai.Client(api_key=gemini_key, http_options=_types.HttpOptions(timeout=90_000))
         # модели Gemini, у которых ещё есть лимит в этом запуске
         self.gemini_models = list(MODELS) if self.gemini else []
+        self._busy: dict[str, int] = {}  # сколько раз подряд модель была перегружена
         self.min_interval = min_interval  # бесплатный Gemini ~10 запросов/мин на модель
         self._last_gemini = 0.0
 
@@ -357,6 +361,7 @@ class AIParser:
                 try:
                     resp = self.gemini.models.generate_content(model=model, contents=prompt, config=config)
                     data = json.loads(resp.text or "{}")
+                    self._busy[model] = 0
                     return data if isinstance(data, dict) else None
                 except json.JSONDecodeError as e:
                     log.warning("Gemini %s вернул не-JSON: %s", model, e)
@@ -375,8 +380,14 @@ class AIParser:
                         nxt = self.gemini_models[0] if self.gemini_models else (self.groq_model and "Groq") or "нет"
                         log.warning("Gemini %s: %s — переключаюсь на %s", model, why, nxt)
                         continue
-                    if "503" in msg or "UNAVAILABLE" in msg or "500" in msg or "INTERNAL" in msg:
-                        log.info("Gemini %s перегружен — пробую следующую модель", model)
+                    busy_words = ("503", "UNAVAILABLE", "500", "INTERNAL", "timed out", "Timeout", "DEADLINE", "504")
+                    if any(w in msg for w in busy_words):
+                        self._busy[model] = self._busy.get(model, 0) + 1
+                        if self._busy[model] >= 2 and model in self.gemini_models:
+                            self.gemini_models.remove(model)
+                            log.warning("Gemini %s перегружен второй раз подряд — убираю до конца запуска", model)
+                        else:
+                            log.info("Gemini %s перегружен — пробую следующую модель", model)
                         continue
                     log.error("Ошибка Gemini %s: %s", model, msg[:300])
                     return None
