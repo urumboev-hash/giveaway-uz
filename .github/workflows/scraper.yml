@@ -2,7 +2,7 @@ name: Giveaway scraper
 
 on:
   schedule:
-    - cron: "0 */3 * * *"   # каждые 3 часа (UTC)
+    - cron: "7 * * * *"   # каждый час (UTC); 7-я минута — в начале часа GitHub перегружен
   workflow_dispatch: {}      # ручной запуск из вкладки Actions
 
 concurrency:
