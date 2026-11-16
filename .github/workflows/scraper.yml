@@ -5,6 +5,10 @@ on:
     - cron: "7 * * * *"   # каждый час (UTC); 7-я минута — в начале часа GitHub перегружен
   workflow_dispatch: {}      # ручной запуск из вкладки Actions
 
+permissions:
+  contents: read
+  actions: write   # чтобы продлевать расписание (см. последний шаг)
+
 concurrency:
   group: scraper
   cancel-in-progress: false
@@ -49,3 +53,12 @@ jobs:
           IG_SESSION_B64: ${{ secrets.IG_SESSION_B64 }}
           PYTHONUNBUFFERED: "1"
         run: python main.py
+
+      # GitHub отключает расписание в репозитории без коммитов через 60 дней.
+      # Повторное «включение» workflow через API сбрасывает этот счётчик — сбор не остановится сам.
+      - name: Keep schedule alive
+        if: always()
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/scraper.yml/enable" || true

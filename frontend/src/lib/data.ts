@@ -28,7 +28,9 @@ export async function getGiveaways(): Promise<{ items: Giveaway[]; error: string
     .eq("is_active", true)
     .order("created_at", { ascending: false })
     .limit(500);
-  if (error) return { items: [], error: error.message };
+  // Ошибку бросаем: при обновлении страницы (ISR) Vercel тогда оставит последнюю удачную версию,
+  // а не покажет посетителям пустой список из-за минутного сбоя базы
+  if (error) throw new Error(`Supabase: ${error.message}`);
   const now = Date.now();
   const items = ((data ?? []) as unknown as Giveaway[]).filter((g) => isCurrent(g, now));
   items.sort((a, b) => sortKey(b) - sortKey(a));
