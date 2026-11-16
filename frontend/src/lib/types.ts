@@ -30,4 +30,11 @@ export interface Giveaway {
   category: Category;
   source_type: "google" | "account" | "hashtag" | "user_submit";
   created_at: string;
+  region: string;
+  starts_at: string | null;
+  ends_at: string | null;
+  posted_at: string | null;
+  title_uz: string | null;
+  prize_uz: string | null;
+  conditions_uz: string[] | null;
 }

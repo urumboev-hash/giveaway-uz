@@ -14,8 +14,10 @@ import sys
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
+from datetime import date, datetime, timedelta, timezone
+
 from collectors import accounts_collector, google_collector, hashtag_collector
-from collectors.base import RawPost
+from collectors.base import RawPost, posted_at_from_url
 
 load_dotenv()
 # убираем BOM/пробелы из ключей (бывает при копировании или передаче через PowerShell)
@@ -32,6 +34,20 @@ for noisy in ("primp", "httpx", "httpx2", "httpcore", "ddgs", "ddgs.ddgs", "goog
 log = logging.getLogger("main")
 
 MAX_AI_CALLS_PER_RUN = int(os.getenv("MAX_AI_CALLS_PER_RUN", "60"))
+# посты старше этого даже не отправляем в ИИ — почти всегда уже прошли
+MAX_POST_AGE_DAYS = int(os.getenv("MAX_POST_AGE_DAYS", "30"))
+# акция без даты окончания скрывается через столько дней после публикации
+NO_END_DATE_TTL_DAYS = int(os.getenv("NO_END_DATE_TTL_DAYS", "21"))
+TASHKENT = timezone(timedelta(hours=5))  # в Узбекистане нет перехода на летнее время
+
+
+def to_ts(d: str, t: str, default_time: str) -> str | None:
+    """'2026-11-20' + '10:00' (по Ташкенту) → ISO-время для базы."""
+    if not d:
+        return None
+    hh, mm = (t or default_time).split(":")
+    dt = datetime.combine(date.fromisoformat(d), datetime.min.time(), TASHKENT).replace(hour=int(hh), minute=int(mm))
+    return dt.isoformat()
 
 # слова «халявы» — посты с ними проверяем первыми, чтобы лимит ИИ тратился на самые вероятные
 FREE_WORDS = (
@@ -112,6 +128,26 @@ def main() -> int:
         posts = [p for p in posts if p.post_url not in seen]
         log.info("Новых (ещё не в базе): %d", len(posts))
 
+    # дата публикации — прямо из ссылки; старые посты отсеиваем без ИИ (экономим лимит)
+    now = datetime.now(timezone.utc)
+    fresh, old = [], []
+    for p in posts:
+        p.posted_at = p.posted_at or posted_at_from_url(p.post_url)
+        if p.posted_at and p.posted_at < now - timedelta(days=MAX_POST_AGE_DAYS):
+            old.append(p)
+        else:
+            fresh.append(p)
+    if old:
+        log.info("Старше %d дней, пропускаем: %d", MAX_POST_AGE_DAYS, len(old))
+        if sb is not None:
+            try:
+                sb.table("rejected_posts").upsert(
+                    [{"post_url": p.post_url, "reason": "old"} for p in old], on_conflict="post_url"
+                ).execute()
+            except Exception as e:
+                log.warning("Не удалось записать старые посты: %s", e)
+    posts = fresh
+
     posts.sort(key=free_score, reverse=True)
     if len(posts) > MAX_AI_CALLS_PER_RUN:
         log.info("Проверим %d самых вероятных, остальные %d — в следующий запуск",
@@ -124,36 +160,26 @@ def main() -> int:
 
     saved = rejected = failed = 0
     for p in posts:
-        result = parser.parse(p.text, p.account_name)
+        result = parser.parse(p.text, p.account_name, p.posted_at.astimezone(TASHKENT).date() if p.posted_at else None)
         if result is None:
             failed += 1  # ошибка API — не помечаем, попробуем в следующий раз
             continue
 
-        if not result["is_valid"]:
+        row = build_row(p.post_url, p.account_name, p.image_url, p.source_type, p.posted_at, result)
+        if not result["is_valid"] or row is None:
             rejected += 1
-            log.info("✗ %s — не розыгрыш/неактуален", p.post_url)
+            log.info("✗ %s — %s", p.post_url, "уже прошло" if result["is_valid"] else "не халява/неактуально")
             if sb is not None:
                 try:
                     sb.table("rejected_posts").upsert(
-                        {"post_url": p.post_url, "reason": "ai_invalid"}, on_conflict="post_url"
+                        {"post_url": p.post_url, "reason": "expired" if result["is_valid"] else "ai_invalid"},
+                        on_conflict="post_url",
                     ).execute()
                 except Exception as e:
                     log.warning("Не удалось записать rejected: %s", e)
             continue
 
-        row = {
-            "post_url": p.post_url,
-            "account_name": p.account_name,
-            "image_url": p.image_url,
-            "title": result["title"],
-            "prize": result["prize"],
-            "conditions": result["conditions"],
-            "end_date": result["end_date"],
-            "category": result["category"],
-            "source_type": p.source_type,
-            "is_active": True,
-        }
-        log.info("✓ %s — %s [%s]", p.post_url, row["title"], row["category"])
+        log.info("✓ %s — %s [%s, %s]", p.post_url, row["title"], row["category"], row["region"])
         if sb is None:
             saved += 1
             continue
@@ -166,7 +192,61 @@ def main() -> int:
 
     log.info("Итог: сохранено %d, отклонено %d, ошибок %d (разобрал Gemini: %d, Groq: %d)",
              saved, rejected, failed, parser.stats["gemini"], parser.stats["groq"])
+
+    if sb is not None:
+        deactivate_expired(sb)
+        try:
+            import notifier
+
+            notifier.send_new(sb)
+        except Exception as e:  # уведомления не должны ронять сбор
+            log.warning("Уведомления не отправлены: %s", e)
     return 0
+
+
+def build_row(post_url, account_name, image_url, source_type, posted_at, result) -> dict | None:
+    """Строка для базы из ответа ИИ. None — если по датам акция уже закончилась."""
+    ends_at = to_ts(result["end_date_iso"], result["end_time"], "23:59")
+    if ends_at and datetime.fromisoformat(ends_at) < datetime.now(timezone.utc):
+        return None
+    return {
+        "post_url": post_url,
+        "account_name": account_name,
+        "image_url": image_url,
+        "title": result["title"],
+        "prize": result["prize"],
+        "conditions": result["conditions"],
+        "end_date": result["end_date"],
+        "category": result["category"],
+        "region": result["region"],
+        "starts_at": to_ts(result["start_date"], result["start_time"], "00:00"),
+        "ends_at": ends_at,
+        "posted_at": posted_at.isoformat() if posted_at else None,
+        "title_uz": result["title_uz"] or None,
+        "prize_uz": result["prize_uz"] or None,
+        "conditions_uz": result["conditions_uz"],
+        "source_type": source_type,
+        "is_active": True,
+    }
+
+
+def deactivate_expired(sb: Client) -> None:
+    """Прячем с сайта прошедшие акции и старые посты без даты окончания."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=NO_END_DATE_TTL_DAYS)).isoformat()
+    hidden = 0
+    for q in (
+        sb.table("giveaways").update({"is_active": False}).eq("is_active", True).lt("ends_at", now.isoformat()),
+        sb.table("giveaways").update({"is_active": False}).eq("is_active", True).is_("ends_at", "null")
+        .lt("posted_at", cutoff),
+        sb.table("giveaways").update({"is_active": False}).eq("is_active", True).is_("ends_at", "null")
+        .is_("posted_at", "null").lt("created_at", cutoff),
+    ):
+        try:
+            hidden += len(q.execute().data or [])
+        except Exception as e:
+            log.warning("Не удалось скрыть прошедшие: %s", e)
+    log.info("Скрыто прошедших/старых акций: %d", hidden)
 
 
 if __name__ == "__main__":

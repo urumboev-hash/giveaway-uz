@@ -36,6 +36,25 @@ GROQ_PREFERRED = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "openai/gpt-
 
 CATEGORIES = ["Техника", "Деньги", "Авто", "Еда и кафе", "Красота и одежда", "Другое"]
 
+# коды областей — совпадают с check-ограничением в базе и фильтром на сайте
+REGIONS = {
+    "tashkent": "город Ташкент",
+    "tashkent_obl": "Ташкентская область (Чирчик, Ангрен, Алмалык, Янгиюль, Нурафшон, Бекабад и др.)",
+    "andijan": "Андижанская область",
+    "bukhara": "Бухарская область",
+    "jizzakh": "Джизакская область",
+    "kashkadarya": "Кашкадарьинская область (Карши, Шахрисабз)",
+    "navoi": "Навоийская область",
+    "namangan": "Наманганская область (Наманган, Касансай, Учкурган, Янгикурган, Пап, Чуст)",
+    "samarkand": "Самаркандская область",
+    "surkhandarya": "Сурхандарьинская область (Термез, Денау)",
+    "syrdarya": "Сырдарьинская область (Гулистан, Янгиер)",
+    "fergana": "Ферганская область (Фергана, Коканд, Маргилан, Алтыарык, Кувасай)",
+    "khorezm": "Хорезмская область (Ургенч, Хива)",
+    "karakalpakstan": "Республика Каракалпакстан (Нукус)",
+    "all": "весь Узбекистан / онлайн / город не указан",
+}
+
 RESPONSE_SCHEMA = {
     "type": "OBJECT",
     "properties": {
@@ -45,14 +64,25 @@ RESPONSE_SCHEMA = {
         "conditions": {"type": "ARRAY", "items": {"type": "STRING"}},
         "end_date": {"type": "STRING"},
         "category": {"type": "STRING", "enum": CATEGORIES},
+        "region": {"type": "STRING", "enum": list(REGIONS)},
+        "start_date": {"type": "STRING"},
+        "start_time": {"type": "STRING"},
+        "end_date_iso": {"type": "STRING"},
+        "end_time": {"type": "STRING"},
+        "title_uz": {"type": "STRING"},
+        "prize_uz": {"type": "STRING"},
+        "conditions_uz": {"type": "ARRAY", "items": {"type": "STRING"}},
     },
-    "required": ["is_valid", "title", "prize", "conditions", "end_date", "category"],
+    "required": [
+        "is_valid", "title", "prize", "conditions", "end_date", "category", "region",
+        "start_date", "start_time", "end_date_iso", "end_time", "title_uz", "prize_uz", "conditions_uz",
+    ],
 }
 
 SYSTEM_PROMPT = """Ты — модератор агрегатора «халявы» в Instagram для всего Узбекистана (Ташкент и все регионы).
 Тебе дают сырой текст поста (на русском, узбекском или английском; может быть только короткий сниппет из поиска).
 
-Сегодня: {today}.
+Сегодня: {today}. Пост опубликован: {posted}.
 
 Нам нужно ВСЁ, что человек может получить БЕСПЛАТНО, не заплатив ни сума:
 - розыгрыши, гивы, конкурсы, викторины с призами (условия вроде подписки, лайка, репоста, отметки друзей — это нормально);
@@ -63,9 +93,11 @@ is_valid = false, если:
 - это скидка, процент, промокод, кэшбэк, рассрочка, «1+1», «подарок при покупке», «бесплатная доставка при заказе» —
   всё, где нужно что-то купить или заплатить;
 - обычная реклама, продажа, спам, объявление об итогах/победителях;
-- розыгрыш/акция уже завершены (дата в прошлом);
+- розыгрыш/акция уже завершены (дата итогов/окончания раньше сегодняшней);
+- дат нет, а пост опубликован больше 30 дней назад — скорее всего уже прошло;
 - явно не для Узбекистана.
-Если дата не указана, но это явно действующая бесплатная раздача или розыгрыш — считай актуальным.
+Если дата не указана, но пост свежий и это явно действующая бесплатная раздача или розыгрыш — считай актуальным.
+Относительные даты («завтра», «в субботу», «ertaga», «shanba kuni») считай от даты публикации поста.
 
 Если is_valid = true, заполни на РУССКОМ языке:
 - title: короткий заголовок того, что дают, до 60 символов (например «iPhone 16 Pro», «1 000 000 сум»,
@@ -75,18 +107,35 @@ is_valid = false, если:
   (например «Подписаться на @brand», «Лайкнуть пост», «Отметить 2 друзей», «Прийти по адресу …»).
 - end_date: дата итогов как в посте, приведённая к виду «25 ноября 2026» или «25 ноября»; если нет — «Не указана».
 - category: одна из {categories}.
+- region: код области, где проходит акция/куда доставят приз, один из:
+{regions}
+  Если город не указан или розыгрыш онлайн по всей стране — «all».
+- start_date: дата НАЧАЛА акции/раздачи/мероприятия в формате ГГГГ-ММ-ДД, если она указана или понятна
+  («завтра в 10:00» → дата следующего дня после публикации); иначе пустая строка.
+- start_time: время начала ЧЧ:ММ (24 ч), если указано; иначе пустая строка.
+- end_date_iso: дата окончания/подведения итогов в формате ГГГГ-ММ-ДД; если год не указан — ближайший такой день
+  после даты публикации; если даты нет — пустая строка.
+- end_time: время окончания/итогов ЧЧ:ММ, если указано; иначе пустая строка.
+- title_uz, prize_uz, conditions_uz: те же title, prize, conditions на УЗБЕКСКОМ языке латиницей
+  (например «Bepul master-klass», «@brand sahifasiga obuna bo'ling», «Postga layk bosing»).
 
-Если is_valid = false — остальные поля заполни пустыми строками/пустым списком, category = «Другое».
+Если is_valid = false — остальные поля заполни пустыми строками/пустым списком, category = «Другое», region = «all».
 Отвечай только JSON."""
 
 # для Groq схему описываем словами — он возвращает json_object без строгой схемы
 JSON_SHAPE = (
     '\n\nФормат ответа — ровно один JSON-объект с ключами: '
     '"is_valid" (true/false), "title" (строка), "prize" (строка), '
-    '"conditions" (массив строк), "end_date" (строка), "category" (строка из списка выше).'
+    '"conditions" (массив строк), "end_date" (строка), "category" (строка из списка выше), '
+    '"region" (код из списка выше), "start_date", "start_time", "end_date_iso", "end_time" (строки), '
+    '"title_uz", "prize_uz" (строки), "conditions_uz" (массив строк).'
 )
 
-EMPTY = {"is_valid": False, "title": "", "prize": "", "conditions": [], "end_date": "", "category": "Другое"}
+EMPTY = {
+    "is_valid": False, "title": "", "prize": "", "conditions": [], "end_date": "", "category": "Другое",
+    "region": "all", "start_date": "", "start_time": "", "end_date_iso": "", "end_time": "",
+    "title_uz": "", "prize_uz": "", "conditions_uz": [],
+}
 
 
 def _clean(v: str | None) -> str:
@@ -126,13 +175,18 @@ class AIParser:
         return not self.gemini_models
 
     # ---------- общий вход ----------
-    def parse(self, text: str, account_name: str | None = None) -> dict | None:
+    def parse(self, text: str, account_name: str | None = None, posted: date | None = None) -> dict | None:
         """Возвращает словарь по схеме или None при ошибке API."""
         if not text or len(text.strip()) < 15:
             return dict(EMPTY)
 
         prompt = f"Аккаунт: @{account_name or 'неизвестно'}\n\nТекст поста:\n{text[:4000]}"
-        system = SYSTEM_PROMPT.format(today=date.today().isoformat(), categories=", ".join(CATEGORIES))
+        system = SYSTEM_PROMPT.format(
+            today=date.today().isoformat(),
+            posted=posted.isoformat() if posted else "неизвестно",
+            categories=", ".join(CATEGORIES),
+            regions="\n".join(f"  {k} — {v}" for k, v in REGIONS.items()),
+        )
 
         if not self.gemini_off:
             result = self._gemini(system, prompt)
@@ -259,12 +313,17 @@ class AIParser:
 
     @staticmethod
     def _normalize(data: dict) -> dict:
-        conditions = data.get("conditions") or []
-        if not isinstance(conditions, list):
-            conditions = [str(conditions)]
+        def str_list(v) -> list[str]:
+            if not isinstance(v, list):
+                v = [v] if v else []
+            return [str(c).strip() for c in v if str(c).strip()][:8]
+
         category = data.get("category") or "Другое"
         if category not in CATEGORIES:
             category = "Другое"
+        region = str(data.get("region") or "all").strip()
+        if region not in REGIONS:
+            region = "all"
         is_valid = data.get("is_valid")
         if isinstance(is_valid, str):
             is_valid = is_valid.strip().lower() in ("true", "1", "yes", "да")
@@ -272,7 +331,34 @@ class AIParser:
             "is_valid": bool(is_valid),
             "title": str(data.get("title") or "").strip()[:120],
             "prize": str(data.get("prize") or "").strip()[:1000],
-            "conditions": [str(c).strip() for c in conditions if str(c).strip()][:8],
+            "conditions": str_list(data.get("conditions")),
             "end_date": str(data.get("end_date") or "Не указана").strip()[:60],
             "category": category,
+            "region": region,
+            "start_date": _iso_date(data.get("start_date")),
+            "start_time": _hhmm(data.get("start_time")),
+            "end_date_iso": _iso_date(data.get("end_date_iso")),
+            "end_time": _hhmm(data.get("end_time")),
+            "title_uz": str(data.get("title_uz") or "").strip()[:120],
+            "prize_uz": str(data.get("prize_uz") or "").strip()[:1000],
+            "conditions_uz": str_list(data.get("conditions_uz")),
         }
+
+
+def _iso_date(v) -> str:
+    """'2026-11-20' → как есть; всё остальное (пусто, мусор) → ''."""
+    s = str(v or "").strip()[:10]
+    try:
+        return date.fromisoformat(s).isoformat()
+    except ValueError:
+        return ""
+
+
+def _hhmm(v) -> str:
+    s = str(v or "").strip().replace(".", ":")
+    parts = s.split(":")
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1][:2].isdigit():
+        h, m = int(parts[0]), int(parts[1][:2])
+        if 0 <= h < 24 and 0 <= m < 60:
+            return f"{h:02d}:{m:02d}"
+    return ""

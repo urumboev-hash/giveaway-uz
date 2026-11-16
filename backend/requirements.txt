@@ -5,3 +5,5 @@ ddgs>=9.0
 instaloader>=4.14
 python-dotenv>=1.0
 requests>=2.31
+# push-уведомления о новых акциях
+pywebpush>=2.0
