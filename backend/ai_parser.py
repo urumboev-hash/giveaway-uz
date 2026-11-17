@@ -72,12 +72,38 @@ RESPONSE_SCHEMA = {
         "title_uz": {"type": "STRING"},
         "prize_uz": {"type": "STRING"},
         "conditions_uz": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "country": {"type": "STRING", "enum": ["uz", "other", "unknown"]},
+        "country_evidence": {"type": "STRING"},
     },
     "required": [
+        "country", "country_evidence",
         "is_valid", "title", "prize", "conditions", "end_date", "category", "region",
         "start_date", "start_time", "end_date_iso", "end_time", "title_uz", "prize_uz", "conditions_uz",
     ],
 }
+
+COUNTRY_RULES = """КАК ОПРЕДЕЛИТЬ СТРАНУ (поле country) — это самое важное, сначала реши его:
+Поиск часто приносит посты из России, Казахстана, Кыргызстана, Таджикистана, Беларуси, Украины и т. д.
+Русский язык поста НЕ значит Узбекистан. Нам нужны ТОЛЬКО акции, в которых может участвовать житель Узбекистана.
+- country = "uz", только если есть хотя бы одна КОНКРЕТНАЯ примета Узбекистана:
+  • текст на узбекском (латиница или кириллица: «obuna boʻling», «yutib oling», «sovgʻa», «ishtirok etish», «совға»,
+    «ютиб олинг», «шартлар», «ғолиб»);
+  • валюта сум / soʻm / so'm / UZS, «млн сум»;
+  • город, район или область Узбекистана (Ташкент, Чиланзар, Юнусабад, Самарканд, Наманган, Коканд, Нукус и т. д.);
+  • телефон +998, домен .uz, Telegram/аккаунт с uz/tashkent/toshkent/samarqand и т. п. в имени;
+  • узбекские платёжки и сервисы: Click, Payme, Uzcard, Humo, Uzum, Korzinka, Makro, Texnomart, Mediapark, Artel,
+    Beeline/Ucell/Uzmobile/Mobiuz, Yandex Go Uzbekistan, Express24 и т. п.;
+  • прямо сказано «по Узбекистану», «доставка по Узбекистану», «для жителей Узбекистана».
+- country = "other", если есть примета другой страны: рубли (₽, руб, р.), тенге (₸), гривны, BYN, сомы Кыргызстана,
+  сомони; города/регионы другой страны (Москва, Питер, Казань, Грозный, Чечня, Дагестан, Алматы, Астана, Бишкек,
+  Душанбе, Минск, Киев и т. д.); телефон +7 / +375 / +380 / +996 / +992; доставка «по России/РФ/СНГ кроме Узбекистана»;
+  российские сервисы как условие (Госуслуги, Сбер, Тинькофф/Т-Банк, ВТБ, ВКонтакте, Почта России, Кинопоиск, Литрес).
+  Если есть И узбекские, И чужие приметы — смотри, где реально проходит акция и куда доставят приз.
+- country = "unknown", если примет нет совсем (например, русскоязычный онлайн-розыгрыш или мастер-класс без города
+  и валюты). Такие посты мы НЕ публикуем, поэтому не ставь "uz" наугад: имя бренда или человека, звучащее
+  по-узбекски, само по себе НЕ доказательство, а вот узбекские слова в тексте или в имени аккаунта — доказательство.
+- country_evidence: коротко, какая именно примета (например «цена в сумах», «город Термез», «текст на узбекском»,
+  «приз в рублях», «нет примет»)."""
 
 SYSTEM_PROMPT = """Ты — модератор агрегатора «халявы» в Instagram для всего Узбекистана (Ташкент и все регионы).
 Тебе дают сырой текст поста (на русском, узбекском или английском; может быть только короткий сниппет из поиска).
@@ -95,7 +121,10 @@ is_valid = false, если:
 - обычная реклама, продажа, спам, объявление об итогах/победителях;
 - розыгрыш/акция уже завершены (дата итогов/окончания раньше сегодняшней);
 - дат нет, а пост опубликован больше 30 дней назад — скорее всего уже прошло;
-- явно не для Узбекистана.
+- country ≠ "uz" (см. правила ниже).
+
+{country_rules}
+
 Если дата не указана, но пост свежий и это явно действующая бесплатная раздача или розыгрыш — считай актуальным.
 Текст часто обрезан (это сниппет из поиска). Если видно, что это розыгрыш/конкурс с условиями вроде
 «obuna boʻling», «izoh qoldiring», «подпишись», «отметь друзей» — считай его валидным, даже если приз или срок
@@ -112,7 +141,8 @@ is_valid = false, если:
 - category: одна из {categories}.
 - region: код области, где проходит акция/куда доставят приз, один из:
 {regions}
-  Если город не указан или розыгрыш онлайн по всей стране — «all».
+  Если город не указан или розыгрыш онлайн по всей стране — «all». Учитывай и имя аккаунта
+  (например @termez_video → surkhandarya, @chicshop_qarshi → kashkadarya, @manti.house.nmg → namangan).
 - start_date: дата НАЧАЛА акции/раздачи/мероприятия в формате ГГГГ-ММ-ДД, если она указана или понятна
   («завтра в 10:00» → дата следующего дня после публикации); иначе пустая строка.
 - start_time: время начала ЧЧ:ММ (24 ч), если указано; иначе пустая строка.
@@ -124,13 +154,14 @@ is_valid = false, если:
   @аккаунты и модели не переводи, «сум» → «soʻm» (например «Bepul master-klass», «@brand sahifasiga obuna boʻling»,
   «Postga layk bosing», «2 ta doʻstingizni belgilang»).
 
-Если is_valid = false — остальные поля заполни пустыми строками/пустым списком, category = «Другое», region = «all».
+Если is_valid = false — остальные поля заполни пустыми строками/пустым списком, category = «Другое», region = «all»
+(country и country_evidence заполняй всегда).
 Отвечай только JSON."""
 
 # для Groq схему описываем словами — он возвращает json_object без строгой схемы
 JSON_SHAPE = (
     '\n\nФормат ответа — ровно один JSON-объект с ключами: '
-    '"is_valid" (true/false), "title" (строка), "prize" (строка), '
+    '"country" ("uz"/"other"/"unknown"), "country_evidence" (строка), "is_valid" (true/false), "title" (строка), "prize" (строка), '
     '"conditions" (массив строк), "end_date" (строка), "category" (строка из списка выше), '
     '"region" (код из списка выше), "start_date", "start_time", "end_date_iso", "end_time" (строки), '
     '"title_uz", "prize_uz" (строки), "conditions_uz" (массив строк).'
@@ -182,7 +213,7 @@ TRANSLATE_SHAPE = (
 EMPTY = {
     "is_valid": False, "title": "", "prize": "", "conditions": [], "end_date": "", "category": "Другое",
     "region": "all", "start_date": "", "start_time": "", "end_date_iso": "", "end_time": "",
-    "title_uz": "", "prize_uz": "", "conditions_uz": [],
+    "title_uz": "", "prize_uz": "", "conditions_uz": [], "country": "unknown", "country_evidence": "",
 }
 
 
@@ -238,6 +269,7 @@ class AIParser:
             posted=posted.isoformat() if posted else "неизвестно",
             categories=", ".join(CATEGORIES),
             regions="\n".join(f"  {k} — {v}" for k, v in REGIONS.items()),
+            country_rules=COUNTRY_RULES,
         )
 
         raw = self._ask(system, prompt, RESPONSE_SCHEMA, JSON_SHAPE)
@@ -267,6 +299,7 @@ class AIParser:
             posted="указана у каждого поста отдельно",
             categories=", ".join(CATEGORIES),
             regions="\n".join(f"  {k} — {v}" for k, v in REGIONS.items()),
+            country_rules=COUNTRY_RULES,
         )
         blocks = []
         for n, i in enumerate(todo, 1):
@@ -327,6 +360,58 @@ class AIParser:
                     "prize_uz": str(it.get("prize_uz") or "").strip()[:1000],
                     "conditions_uz": [str(c).strip() for c in (it.get("conditions_uz") or []) if str(c).strip()][:8],
                 }
+        return out
+
+    def check_country_many(self, items: list[dict]) -> list[str | None]:
+        """Повторная проверка уже сохранённых акций: «uz» / «other» / «unknown» (None — ошибка ИИ).
+
+        items: [{"account_name", "title", "prize", "conditions", "post_url"}].
+        """
+        if not items:
+            return []
+        system = (
+            "Ты проверяешь карточки агрегатора бесплатных розыгрышей для Узбекистана. Карточки — это наш пересказ "
+            "поста по-русски, поэтому русский язык карточки ничего не значит; узбекские слова в заголовке/описании "
+            "(«sovgʻa», «yutib oling», «Kutilmagan qoʻngʻiroq») — примета. Смотри на имя аккаунта, валюту, города, "
+            "бренды. Карточка без единой конкретной приметы — «unknown».\n\n"
+            + COUNTRY_RULES
+        )
+        blocks = []
+        for n, it in enumerate(items, 1):
+            conds = "; ".join(it.get("conditions") or [])
+            blocks.append(
+                f"### {n}\nАккаунт: @{it.get('account_name') or 'неизвестно'}\nЗаголовок: {it.get('title') or ''}\n"
+                f"Описание: {it.get('prize') or ''}\nУсловия: {conds}"
+            )
+        prompt = (
+            f"Определи страну для {len(items)} карточек. Верни объект с полем items — массив ровно из {len(items)} "
+            "объектов с полями n, country, country_evidence.\n\n" + "\n\n".join(blocks)
+        )
+        schema = {
+            "type": "OBJECT",
+            "properties": {"items": {"type": "ARRAY", "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "n": {"type": "INTEGER"},
+                    "country": {"type": "STRING", "enum": ["uz", "other", "unknown"]},
+                    "country_evidence": {"type": "STRING"},
+                },
+                "required": ["n", "country", "country_evidence"],
+            }}},
+            "required": ["items"],
+        }
+        shape = '\n\nФормат ответа — {"items": [{"n": 1, "country": "uz|other|unknown", "country_evidence": "..."}]}.'
+        raw = self._ask(system, prompt, schema, shape)
+        out: list[str | None] = [None] * len(items)
+        for it in (raw or {}).get("items") or []:
+            try:
+                n = int(it.get("n"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            c = str(it.get("country") or "").lower()
+            if 1 <= n <= len(items) and c in ("uz", "other", "unknown"):
+                out[n - 1] = c
+                log.info("  %s → %s (%s)", items[n - 1].get("title"), c, it.get("country_evidence"))
         return out
 
     def _ask(self, system: str, prompt: str, schema: dict, shape: str) -> dict | None:
@@ -479,7 +564,12 @@ class AIParser:
         is_valid = data.get("is_valid")
         if isinstance(is_valid, str):
             is_valid = is_valid.strip().lower() in ("true", "1", "yes", "да")
+        country = str(data.get("country") or "unknown").strip().lower()
+        if country not in ("uz", "other", "unknown"):
+            country = "unknown"
         return {
+            "country": country,
+            "country_evidence": str(data.get("country_evidence") or "").strip()[:200],
             "is_valid": bool(is_valid),
             "title": str(data.get("title") or "").strip()[:120],
             "prize": str(data.get("prize") or "").strip()[:1000],

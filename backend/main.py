@@ -63,34 +63,46 @@ FREE_WORDS = (
 
 
 UZ_WORDS = (
-    "узбекистан", "ташкент", "toshkent", "tashkent", "o'zbekiston", "oʻzbekiston", "uzbekistan", "so'm", "сум",
+    "узбекистан", "ташкент", "toshkent", "tashkent", "o'zbekiston", "oʻzbekiston", "uzbekistan", "so'm", "soʻm",
     "samarqand", "самарканд", "buxoro", "бухар", "farg'ona", "ферган", "namangan", "наманган", "andijon", "андижан",
     "qarshi", "карши", "navoiy", "навои", "jizzax", "джизак", "termiz", "термез", "urganch", "ургенч", "nukus",
     "нукус", "guliston", "гулистан", "chirchiq", "чирчик", "qo'qon", "коканд", "bo'ling", "obuna", "sovg'a",
-    "yutib", "konkurs", "g'olib", "ishtirok", "shartlar",
+    "yutib", "g'olib", "ishtirok", "shartlar", "+998", ".uz", "uzcard", "humo", "payme", "чиланзар",
+    "юнусабад", "chilonzor", "yunusobod", "маргилан", "marg'ilon", "хорезм", "xorazm", "каракалпак", "qoraqalpoq",
+    "совға", "ютиб", "ғолиб", "шартлар", "обуна",
 )
+# «сум» отдельным словом (не «сумма», «сумка»)
+UZ_RE = re.compile(r"\bсум(ов|а|ы)?\b|\buzs\b|\bmln\b|\bming\b", re.IGNORECASE)
 
 # Чужие страны — поиск по «розыгрыш дарим» часто приносит Россию/Казахстан/Беларусь; их отсеиваем без ИИ
 FOREIGN_RE = re.compile(
-    r"₽|\bруб\b|рублей|\bbyn\b|тенге|₸|росси|москв|спб|санкт-петербург|казахстан|kazakhstan|беларус|минск|"
-    r"\.ru\b|\.kz\b|\.by\b|костанай|алмат|астан|караганд|шымкент|сургут|якутск|челябинск|ставропол|"
-    r"екатеринбург|новосибирск|краснодар|казан[ьи]|самар[аеы]\b|уф[аеы]\b|перм[ьи]|омск|тюмен|иркутск|"
-    r"хабаровск|владивосток|ростов|воронеж|нижн|\bнн\b|кыргызстан|бишкек|таджикистан|душанбе",
+    r"₽|\bруб\b|\bруб\.|\bр\.\s|рубл|\bbyn\b|тенге|₸|₴|\bгрн\b|гривн|сомони|росси|\bрф\b|москв|\bмск\b|спб|питер|"
+    r"санкт-петербург|казахстан|kazakhstan|беларус|минск|украин|киев|\.ru\b|\.kz\b|\.by\b|костанай|алмат|"
+    r"астан|караганд|шымкент|сургут|якутск|челябинск|ставропол|екатеринбург|новосибирск|краснодар|"
+    r"казан[ьи]\b|самар[аеы]\b|уф[аеы]\b|перм[ьи]\b|омск|тюмен|иркутск|хабаровск|владивосток|ростов|воронеж|"
+    r"нижн(ий|его|ем) новгород|\bнн\b|кыргызстан|бишкек|таджикистан|душанбе|чечн|чеченк|грозн|дагестан|"
+    r"махачкал|ингушет|кабардин|осетия|крым|севастопол|госуслуг|сбербанк|т-банк|тинькофф|почта россии|"
+    r"вконтакте|\+7\s?\(?9|\+375|\+380|\+996|\+992|азербайджан|баку|армени|ереван|грузи[яи]|тбилиси",
     re.IGNORECASE,
 )
 CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
 
 
+def has_uz_sign(t: str) -> bool:
+    t = t.lower()
+    return any(w in t for w in UZ_WORDS) or bool(UZ_RE.search(t))
+
+
 def is_foreign(p: RawPost) -> bool:
-    """Явно не Узбекистан: есть приметы другой страны и нет ни одной узбекской."""
-    t = (p.text or "").lower()
-    return bool(FOREIGN_RE.search(t)) and not any(w in t for w in UZ_WORDS)
+    """Явно не Узбекистан: есть приметы другой страны и нет ни одной узбекской (в тексте и имени аккаунта)."""
+    t = f"{p.text or ''} {p.account_name or ''}".lower()
+    return bool(FOREIGN_RE.search(t)) and not has_uz_sign(t)
 
 
 def free_score(p: RawPost) -> int:
     t = (p.text or "").lower()
     # узбекские приметы весят больше: такие посты ИИ проверяет первыми
-    return sum(w in t for w in FREE_WORDS) + 2 * sum(w in t for w in UZ_WORDS)
+    return sum(w in t for w in FREE_WORDS) + 2 * sum(w in t for w in UZ_WORDS) + 2 * bool(UZ_RE.search(t))
 
 
 def needs_translation(row: dict) -> bool:
@@ -283,6 +295,12 @@ def main() -> int:
         for p, result in zip(batch, results):
             if result is None:
                 failed += 1  # ошибка API — не помечаем, попробуем в следующий раз
+                continue
+
+            if result["country"] != "uz":
+                rejected += 1
+                reject(p, "foreign" if result["country"] == "other" else "no_uz",
+                       f"не Узбекистан ({result['country']}: {result['country_evidence']})")
                 continue
 
             row = build_row(p.post_url, p.account_name, p.image_url, p.source_type, p.posted_at, result)
