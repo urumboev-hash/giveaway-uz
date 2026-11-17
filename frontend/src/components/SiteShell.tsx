@@ -1,6 +1,7 @@
 import { Inter } from "next/font/google";
 import Link from "next/link";
 import ThemeToggle from "@/components/ThemeToggle";
+import VisitTracker from "@/components/VisitTracker";
 import { DICT, type Lang } from "@/lib/i18n";
 
 const inter = Inter({ subsets: ["latin", "cyrillic"], variable: "--font-inter", display: "swap" });
@@ -18,6 +19,7 @@ export default function SiteShell({ lang, children }: { lang: Lang; children: Re
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body className="min-h-dvh font-sans">
+        <VisitTracker lang={lang} />
         <header className="sticky top-0 z-20 border-b border-zinc-200/70 bg-zinc-50/80 backdrop-blur dark:border-zinc-800/70 dark:bg-zinc-950/80">
           <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-4 py-3">
             <Link href={t.home} className="flex items-center gap-2 text-lg font-extrabold tracking-tight">

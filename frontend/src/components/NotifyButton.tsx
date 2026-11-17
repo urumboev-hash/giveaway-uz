@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { DICT, REGION_LABELS, type Lang, type RegionCode } from "@/lib/i18n";
 import { getSupabase } from "@/lib/supabase";
+import { track } from "@/lib/track";
 
 const VAPID_PUBLIC_KEY = (process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? "").replace(/^﻿/, "").trim();
 
@@ -84,6 +85,7 @@ export default function NotifyButton({ lang, region }: { lang: Lang; region: str
         (await reg.pushManager.getSubscription()) ??
         (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) }));
       await saveSubscription(sub, region, lang);
+      track("notify", { lang, region: region || "all" });
       setState("on");
       setMessage(t.notifyDone);
     } catch {

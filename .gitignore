@@ -1,6 +1,7 @@
 # secrets
 .env
 .env.local
+STATS_KEY.txt
 backend/.ig_session/
 backend/logs/
 

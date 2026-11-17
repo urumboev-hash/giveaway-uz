@@ -11,6 +11,7 @@ import {
   type Lang,
   type RegionCode,
 } from "@/lib/i18n";
+import { track } from "@/lib/track";
 import { CATEGORY_EMOJI, type Giveaway } from "@/lib/types";
 
 interface Props {
@@ -51,7 +52,10 @@ export default function GiveawayCard({ g, lang, joined, checked, onToggleJoined,
     setIsNew(now.getTime() - published < 48 * 3600_000);
   }, [g]);
 
+  const ev = { lang, region: g.region ?? "all", giveawayId: g.id };
+
   async function share() {
+    track("share", ev);
     const text = `${(lang === "uz" && g.title_uz) || g.title || ""} — GiveUz`;
     try {
       if (navigator.share) {
@@ -185,13 +189,17 @@ export default function GiveawayCard({ g, lang, joined, checked, onToggleJoined,
             href={g.post_url}
             target="_blank"
             rel="noopener noreferrer nofollow"
+            onClick={() => track("participate", ev)}
             className="ig-gradient rounded-2xl px-4 py-3 text-center text-sm font-bold text-white shadow-sm transition hover:opacity-90"
           >
             {t.participate}
           </a>
           <button
             type="button"
-            onClick={onToggleJoined}
+            onClick={() => {
+              if (!joined) track("join", ev);
+              onToggleJoined();
+            }}
             aria-pressed={joined}
             className={`rounded-2xl border px-3 py-3 text-sm font-semibold transition ${
               joined ? "border-pink-500 bg-pink-500 text-white" : "border-zinc-200 hover:border-pink-400 dark:border-zinc-700"

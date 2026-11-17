@@ -1,0 +1,11 @@
+import type { Metadata } from "next";
+import StatsView from "@/components/StatsView";
+
+export const metadata: Metadata = {
+  title: "Статистика — GiveUz",
+  robots: { index: false, follow: false },
+};
+
+export default function StatsPage() {
+  return <StatsView />;
+}
